@@ -1,0 +1,390 @@
+=====================================================================
+HOSPITAL OPERATIONS - POWER QUERY (M) CODE   |   Part 3
+Workbook: Hospital_Operations_Advanced_PowerBI.xlsx
+=====================================================================
+
+HOW TO USE THIS FILE
+1. Power BI Desktop -> Home -> Transform data (opens Power Query Editor).
+2. Create the 3 PARAMETERS first (Section A).
+3. For each item in Sections B and C:
+     Home -> New Source -> Blank Query
+     Home -> Advanced Editor -> delete everything -> paste the block
+     -> Done -> rename the query in the Query Settings pane (right side)
+   THE QUERY NAME MUST MATCH THE HEADING EXACTLY (other queries call
+   fnLoadSheet, fnCleanText, fnAddPrevStay by name).
+4. Create queries in the order shown (functions before tables).
+5. Home -> Close & Apply.
+
+The Excel file is never modified. Every change below is a recorded,
+repeatable query step.
+
+NOTE: This code was written against the real column names in the
+workbook, but it was NOT run inside Power Query (not available in the
+sandbox). Verify with the expected numbers given in the chat message.
+
+
+=====================================================================
+SECTION A - PARAMETERS
+(Home -> Manage Parameters -> New Parameter)
+=====================================================================
+
+Name: FilePath
+  Type: Text
+  Current Value: full path to the workbook, e.g.
+  C:\Users\YourName\Documents\Hospital_Operations_Advanced_PowerBI.xlsx
+  (no quotation marks around the path)
+
+Name: StaleThresholdDays
+  Type: Decimal Number
+  Current Value: 30
+  Meaning: an admission with no discharge date that has been open
+  longer than this many days (counted to DataEndDate) is labelled
+  "Stale open record" instead of "Current (open)".
+
+Name: DataEndDate
+  Type: Date
+  Current Value: 2026-09-30   (use your regional date format)
+  Meaning: last date covered by the data (Calendar and ReadMe agree).
+
+
+=====================================================================
+SECTION B - HELPER FUNCTIONS
+=====================================================================
+
+---------------------------------------------------------------------
+QUERY NAME: fnLoadSheet
+---------------------------------------------------------------------
+(SheetName as text) as table =>
+let
+    Source   = Excel.Workbook(File.Contents(FilePath), null, true),
+    Sheet    = Source{[Item = SheetName, Kind = "Sheet"]}[Data],
+    Promoted = Table.PromoteHeaders(Sheet, [PromoteAllScalars = true])
+in
+    Promoted
+
+
+---------------------------------------------------------------------
+QUERY NAME: fnCleanText
+Trims spaces and removes non-printing characters in the listed columns.
+---------------------------------------------------------------------
+(t as table, cols as list) as table =>
+    Table.TransformColumns(
+        t,
+        List.Transform(cols, (c) => {c, (v) => Text.Trim(Text.Clean(v)), type text})
+    )
+
+
+---------------------------------------------------------------------
+QUERY NAME: fnAddPrevStay
+For every row, adds the discharge date and discharge status of the
+PREVIOUS admission that shares the same key (same patient or same bed),
+ordered by AdmissionDate then AdmissionID.
+Adds two columns named <prefix>PrevDischargeDate and <prefix>PrevStatus.
+---------------------------------------------------------------------
+(t as table, keyCol as text, prefix as text) as table =>
+let
+    AddPrev = (g as table) as table =>
+        let
+            Sorted   = Table.Buffer(Table.Sort(g, {{"AdmissionDate", Order.Ascending}, {"AdmissionID", Order.Ascending}})),
+            PrevDate = {null} & List.RemoveLastN(Sorted[DischargeDate], 1),
+            PrevStat = {null} & List.RemoveLastN(Sorted[DischargeStatus], 1),
+            Result   = Table.FromColumns(
+                           Table.ToColumns(Sorted) & {PrevDate, PrevStat},
+                           Table.ColumnNames(Sorted) & {prefix & "PrevDischargeDate", prefix & "PrevStatus"}
+                       )
+        in
+            Result,
+    Grouped  = Table.Group(t, {keyCol}, {{"G", AddPrev, type table}}),
+    Combined = Table.Combine(Grouped[G])
+in
+    Combined
+
+
+=====================================================================
+SECTION C - TABLE QUERIES
+=====================================================================
+
+---------------------------------------------------------------------
+QUERY NAME: Departments
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Departments"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"DepartmentID", Int64.Type},
+                  {"DepartmentName", type text},
+                  {"DepartmentGroup", type text}}),
+    Cleaned = fnCleanText(Typed, {"DepartmentName", "DepartmentGroup"})
+in
+    Cleaned
+
+
+---------------------------------------------------------------------
+QUERY NAME: Wards
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Wards"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"WardID", type text},
+                  {"WardName", type text},
+                  {"BedCapacity", Int64.Type},
+                  {"DepartmentID", Int64.Type}}),
+    Cleaned = fnCleanText(Typed, {"WardID", "WardName"})
+in
+    Cleaned
+
+
+---------------------------------------------------------------------
+QUERY NAME: Beds
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Beds"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"BedID", type text},
+                  {"WardID", type text},
+                  {"WardName", type text},
+                  {"DepartmentID", Int64.Type},
+                  {"BedType", type text}}),
+    Cleaned = fnCleanText(Typed, {"BedID", "WardID", "WardName", "BedType"})
+in
+    Cleaned
+
+
+---------------------------------------------------------------------
+QUERY NAME: Patients
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Patients"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"PatientID", type text},
+                  {"Age", Int64.Type},
+                  {"Gender", type text},
+                  {"City", type text},
+                  {"InsuranceType", type text},
+                  {"AgeGroup", type text}}),
+    Cleaned = fnCleanText(Typed, {"PatientID", "Gender", "City", "InsuranceType", "AgeGroup"})
+in
+    Cleaned
+
+
+---------------------------------------------------------------------
+QUERY NAME: Doctors
+Adds ExperienceBand (+ sort order column).
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Doctors"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"DoctorID", type text},
+                  {"DoctorName", type text},
+                  {"DepartmentID", Int64.Type},
+                  {"Specialization", type text},
+                  {"ExperienceYears", Int64.Type},
+                  {"EmploymentType", type text},
+                  {"Shift", type text}}),
+    Cleaned = fnCleanText(Typed, {"DoctorID", "DoctorName", "Specialization", "EmploymentType", "Shift"}),
+    Band    = Table.AddColumn(Cleaned, "ExperienceBand", each
+                  if [ExperienceYears] <= 5 then "0-5 yrs"
+                  else if [ExperienceYears] <= 10 then "6-10 yrs"
+                  else if [ExperienceYears] <= 15 then "11-15 yrs"
+                  else if [ExperienceYears] <= 20 then "16-20 yrs"
+                  else if [ExperienceYears] <= 25 then "21-25 yrs"
+                  else "26+ yrs", type text),
+    BandOrd = Table.AddColumn(Band, "ExperienceBandOrder", each
+                  if [ExperienceYears] <= 5 then 1
+                  else if [ExperienceYears] <= 10 then 2
+                  else if [ExperienceYears] <= 15 then 3
+                  else if [ExperienceYears] <= 20 then 4
+                  else if [ExperienceYears] <= 25 then 5
+                  else 6, Int64.Type)
+in
+    BandOrd
+
+
+---------------------------------------------------------------------
+QUERY NAME: Calendar
+Keeps the supplied columns and adds MonthStart, MonthShort,
+WeekdayNumber, YearQuarter, IsCompleteMonth.
+---------------------------------------------------------------------
+let
+    Source      = fnLoadSheet("Calendar"),
+    Typed       = Table.TransformColumnTypes(Source, {
+                      {"Date", type date},
+                      {"Year", Int64.Type},
+                      {"Quarter", type text},
+                      {"MonthNumber", Int64.Type},
+                      {"MonthName", type text},
+                      {"YearMonth", type text},
+                      {"DayName", type text},
+                      {"IsWeekend", type logical}}),
+    Cleaned     = fnCleanText(Typed, {"Quarter", "MonthName", "YearMonth", "DayName"}),
+    LastDate    = List.Max(Cleaned[Date]),
+    MonthStart  = Table.AddColumn(Cleaned, "MonthStart", each Date.StartOfMonth([Date]), type date),
+    MonthShort  = Table.AddColumn(MonthStart, "MonthShort", each Text.Start([MonthName], 3), type text),
+    WeekdayNo   = Table.AddColumn(MonthShort, "WeekdayNumber", each Date.DayOfWeek([Date], Day.Monday) + 1, Int64.Type),
+    YearQuarter = Table.AddColumn(WeekdayNo, "YearQuarter", each Text.From([Year]) & "-" & [Quarter], type text),
+    Complete    = Table.AddColumn(YearQuarter, "IsCompleteMonth", each Date.EndOfMonth([Date]) <= LastDate, type logical)
+in
+    Complete
+
+
+---------------------------------------------------------------------
+QUERY NAME: Admissions
+The most important query. Keeps ALL 3,000 rows. Adds:
+  DaysOpen, OpenStayCategory                (finding F1)
+  Pt_PrevDischargeDate, Pt_PrevStatus       (building blocks for Part 4)
+  DQ_PatientOverlap, DQ_AfterDeceased, DQ_PriorStayOpen,
+  DQ_BedOverlap, DQ_DateLogicError, DQ_IssueCount   (finding F5)
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Admissions"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"AdmissionID", type text},
+                  {"PatientID", type text},
+                  {"AdmissionDate", type date},
+                  {"AdmissionType", type text},
+                  {"DepartmentID", Int64.Type},
+                  {"DoctorID", type text},
+                  {"WardID", type text},
+                  {"BedID", type text},
+                  {"DischargeDate", type date},
+                  {"DischargeStatus", type text},
+                  {"LengthOfStayDays", Int64.Type}}),
+    Cleaned = fnCleanText(Typed, {"AdmissionID", "PatientID", "AdmissionType", "DoctorID", "WardID", "BedID", "DischargeStatus"}),
+
+    // ---- previous stay for same patient and same bed ----
+    PtPrev  = fnAddPrevStay(Cleaned, "PatientID", "Pt_"),
+    BedPrev = fnAddPrevStay(PtPrev, "BedID", "Bed_"),
+    Retyped = Table.TransformColumnTypes(BedPrev, {
+                  {"Pt_PrevDischargeDate", type date},
+                  {"Pt_PrevStatus", type text},
+                  {"Bed_PrevDischargeDate", type date},
+                  {"Bed_PrevStatus", type text}}),
+
+    // ---- open-stay classification (nothing is deleted) ----
+    DaysOpen = Table.AddColumn(Retyped, "DaysOpen", each
+                  if [DischargeDate] = null then Duration.Days(DataEndDate - [AdmissionDate]) else null, Int64.Type),
+    OpenCat  = Table.AddColumn(DaysOpen, "OpenStayCategory", each
+                  if [DischargeDate] <> null then "Completed"
+                  else if [DaysOpen] <= StaleThresholdDays then "Current (open)"
+                  else "Stale open record", type text),
+
+    // ---- data-quality flags (1 = flagged, 0 = not flagged) ----
+    F1 = Table.AddColumn(OpenCat, "DQ_PatientOverlap", each
+             if [Pt_PrevDischargeDate] <> null and [AdmissionDate] < [Pt_PrevDischargeDate] then 1 else 0, Int64.Type),
+    F2 = Table.AddColumn(F1, "DQ_AfterDeceased", each
+             if [Pt_PrevStatus] = "Deceased" then 1 else 0, Int64.Type),
+    F3 = Table.AddColumn(F2, "DQ_PriorStayOpen", each
+             if [Pt_PrevStatus] = "Ongoing" then 1 else 0, Int64.Type),
+    F4 = Table.AddColumn(F3, "DQ_BedOverlap", each
+             if [Bed_PrevDischargeDate] <> null and [AdmissionDate] < [Bed_PrevDischargeDate] then 1 else 0, Int64.Type),
+    F5 = Table.AddColumn(F4, "DQ_DateLogicError", each
+             if [DischargeDate] <> null
+                and ([DischargeDate] < [AdmissionDate]
+                     or [LengthOfStayDays] <> Duration.Days([DischargeDate] - [AdmissionDate]))
+             then 1 else 0, Int64.Type),
+    F6 = Table.AddColumn(F5, "DQ_IssueCount", each
+             [DQ_PatientOverlap] + [DQ_AfterDeceased] + [DQ_PriorStayOpen] + [DQ_BedOverlap] + [DQ_DateLogicError], Int64.Type),
+
+    // ---- tidy up ----
+    Removed = Table.RemoveColumns(F6, {"Bed_PrevDischargeDate", "Bed_PrevStatus"}),
+    Sorted  = Table.Sort(Removed, {{"AdmissionDate", Order.Ascending}, {"AdmissionID", Order.Ascending}})
+in
+    Sorted
+
+
+---------------------------------------------------------------------
+QUERY NAME: Discharges
+Validation only. Load it, then HIDE it and do not relate it to
+anything (see Part 2).
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Discharges"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"DischargeRecordID", type text},
+                  {"AdmissionID", type text},
+                  {"PatientID", type text},
+                  {"DischargeDate", type date},
+                  {"DepartmentID", Int64.Type},
+                  {"DoctorID", type text},
+                  {"WardID", type text},
+                  {"DischargeStatus", type text},
+                  {"LengthOfStayDays", Int64.Type}}),
+    Cleaned = fnCleanText(Typed, {"DischargeRecordID", "AdmissionID", "PatientID", "DoctorID", "WardID", "DischargeStatus"})
+in
+    Cleaned
+
+
+---------------------------------------------------------------------
+QUERY NAME: BedSnapshots
+OccupancyRate is kept for validation only. Never sum or average it;
+use SUM(OccupiedBeds) / SUM(BedCapacity).
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("BedSnapshots"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"SnapshotDate", type date},
+                  {"WardID", type text},
+                  {"DepartmentID", Int64.Type},
+                  {"BedCapacity", Int64.Type},
+                  {"OccupiedBeds", Int64.Type},
+                  {"AvailableBeds", Int64.Type},
+                  {"OccupancyRate", type number}}),
+    Cleaned = fnCleanText(Typed, {"WardID"}),
+    Flag    = Table.AddColumn(Cleaned, "DQ_SnapshotIssue", each
+                  if [OccupiedBeds] + [AvailableBeds] <> [BedCapacity]
+                     or [OccupiedBeds] > [BedCapacity]
+                     or [OccupiedBeds] < 0
+                     or [AvailableBeds] < 0
+                  then 1 else 0, Int64.Type)
+in
+    Flag
+
+
+---------------------------------------------------------------------
+QUERY NAME: Staffing
+---------------------------------------------------------------------
+let
+    Source  = fnLoadSheet("Staffing"),
+    Typed   = Table.TransformColumnTypes(Source, {
+                  {"StaffingDate", type date},
+                  {"DepartmentID", Int64.Type},
+                  {"DoctorsOnDuty", Int64.Type},
+                  {"DoctorsAvailable", Int64.Type},
+                  {"NurseOnDuty", Int64.Type}}),
+    Flag    = Table.AddColumn(Typed, "DQ_StaffingIssue", each
+                  if [DoctorsOnDuty] > [DoctorsAvailable]
+                     or [DoctorsOnDuty] <= 0
+                     or [NurseOnDuty] <= 0
+                  then 1 else 0, Int64.Type)
+in
+    Flag
+
+
+---------------------------------------------------------------------
+QUERY NAME: DQ_Summary
+A checking query. View it inside Power Query Editor.
+Right-click the query -> untick "Enable load" (do not load it).
+---------------------------------------------------------------------
+let
+    Checks = {
+        {"Departments",  Departments,  8},
+        {"Wards",        Wards,        8},
+        {"Beds",         Beds,         280},
+        {"Patients",     Patients,     1800},
+        {"Doctors",      Doctors,      91},
+        {"Admissions",   Admissions,   3000},
+        {"Discharges",   Discharges,   2864},
+        {"BedSnapshots", BedSnapshots, 8032},
+        {"Staffing",     Staffing,     8032},
+        {"Calendar",     Calendar,     1004}
+    },
+    ToRow  = (c) => [
+                 TableName      = c{0},
+                 ActualRows     = Table.RowCount(c{1}),
+                 ExpectedRows   = c{2},
+                 RowsWithErrors = Table.RowCount(Table.SelectRowsWithErrors(c{1}))
+             ],
+    Result = Table.FromRecords(List.Transform(Checks, ToRow)),
+    Status = Table.AddColumn(Result, "Status", each
+                 if [ActualRows] = [ExpectedRows] and [RowsWithErrors] = 0 then "OK" else "CHECK", type text)
+in
+    Status

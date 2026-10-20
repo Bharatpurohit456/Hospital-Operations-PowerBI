@@ -1,0 +1,179 @@
+=====================================================================
+HOSPITAL OPERATIONS - VALIDATION MEASURES   |   Part 7
+A self-testing table: each row is one check, the measures compute the
+actual value with ALL filters removed (slicer-proof) and compare it
+with the expected value from the source workbook.
+=====================================================================
+
+HOW TO USE
+1. Table tools -> New table -> paste the "Validation Checks" block.
+2. Select the Measures table -> New measure -> paste each measure
+   below (copy from the line that starts with the measure name).
+3. Add a hidden page called "Validation" (right-click tab -> Hide).
+   Table visual: 'Validation Checks'[Check], 'Validation Checks'[Expected],
+   [Check Actual], [Check Result].  Card visual: [Check Status].
+4. Conditional formatting on the Result column: Font colour -> fx ->
+   Field value -> [Check Result Color].
+5. Expected values describe THIS dataset (30-Sep-2026 refresh). If the
+   data is refreshed, update the Expected numbers.
+
+
+---------------------------------------------------------------------
+STEP 1 - CHECK LIST TABLE (Table tools -> New table)
+---------------------------------------------------------------------
+Validation Checks =
+DATATABLE (
+    "Check", STRING,
+    "Expected", INTEGER,
+    {
+        { "Admissions rows", 3000 },
+        { "Distinct AdmissionIDs", 3000 },
+        { "Duplicate AdmissionIDs", 0 },
+        { "Discharges counted from Admissions", 2864 },
+        { "Rows in Discharges sheet", 2864 },
+        { "Unique patients admitted", 1471 },
+        { "Rows in Patients table", 1800 },
+        { "Admission patients missing from Patients", 0 },
+        { "Bed inventory (Beds table)", 280 },
+        { "Bed capacity (Wards table)", 280 },
+        { "Capacity bed-days", 281120 },
+        { "Snapshot rows", 8032 },
+        { "Snapshot arithmetic issues", 0 },
+        { "Staffing rows", 8032 },
+        { "Staffing data issues", 0 },
+        { "Admissions outside Calendar", 0 },
+        { "Blank discharge dates", 136 },
+        { "Open-stay split difference", 0 },
+        { "Month totals difference", 0 },
+        { "Department totals difference", 0 },
+        { "Latest occupied + available - capacity", 0 },
+        { "Doctors on roster", 91 },
+        { "30-day readmissions", 114 }
+    }
+)
+
+
+---------------------------------------------------------------------
+STEP 2 - MEASURES
+---------------------------------------------------------------------
+
+// Check Actual
+// What: computes the value for the check selected in the current row.
+// Needs: every table in the model + the Part 4 measures.
+// Watch for: a blank result means the check name has no branch
+//   (typo in the table). Differences must be exactly 0.
+Check Actual =
+VAR c = SELECTEDVALUE ( 'Validation Checks'[Check] )
+RETURN
+    SWITCH (
+        c,
+        "Admissions rows",
+            CALCULATE ( COUNTROWS ( Admissions ), REMOVEFILTERS () ),
+        "Distinct AdmissionIDs",
+            CALCULATE ( DISTINCTCOUNT ( Admissions[AdmissionID] ), REMOVEFILTERS () ),
+        "Duplicate AdmissionIDs",
+            CALCULATE ( COUNTROWS ( Admissions ) - DISTINCTCOUNT ( Admissions[AdmissionID] ), REMOVEFILTERS () ),
+        "Discharges counted from Admissions",
+            CALCULATE ( [Total Discharges], REMOVEFILTERS () ),
+        "Rows in Discharges sheet",
+            CALCULATE ( COUNTROWS ( Discharges ), REMOVEFILTERS () ),
+        "Unique patients admitted",
+            CALCULATE ( [Unique Patients], REMOVEFILTERS () ),
+        "Rows in Patients table",
+            CALCULATE ( COUNTROWS ( Patients ), REMOVEFILTERS () ),
+        "Admission patients missing from Patients",
+            CALCULATE (
+                COUNTROWS ( EXCEPT ( VALUES ( Admissions[PatientID] ), VALUES ( Patients[PatientID] ) ) ),
+                REMOVEFILTERS ()
+            ),
+        "Bed inventory (Beds table)",
+            CALCULATE ( [Total Bed Inventory], REMOVEFILTERS () ),
+        "Bed capacity (Wards table)",
+            CALCULATE ( [Total Bed Capacity], REMOVEFILTERS () ),
+        "Capacity bed-days",
+            CALCULATE ( [Capacity Bed-Days], REMOVEFILTERS () ),
+        "Snapshot rows",
+            CALCULATE ( COUNTROWS ( BedSnapshots ), REMOVEFILTERS () ),
+        "Snapshot arithmetic issues",
+            CALCULATE ( SUM ( BedSnapshots[DQ_SnapshotIssue] ), REMOVEFILTERS () ),
+        "Staffing rows",
+            CALCULATE ( COUNTROWS ( Staffing ), REMOVEFILTERS () ),
+        "Staffing data issues",
+            CALCULATE ( SUM ( Staffing[DQ_StaffingIssue] ), REMOVEFILTERS () ),
+        "Admissions outside Calendar",
+            CALCULATE (
+                COUNTROWS ( FILTER ( Admissions, ISBLANK ( RELATED ( Calendar[Date] ) ) ) ),
+                REMOVEFILTERS ()
+            ),
+        "Blank discharge dates",
+            CALCULATE (
+                COUNTROWS ( FILTER ( Admissions, ISBLANK ( Admissions[DischargeDate] ) ) ),
+                REMOVEFILTERS ()
+            ),
+        "Open-stay split difference",
+            CALCULATE (
+                [Undischarged Admission Records] - [Current Open Admissions] - [Stale Open Records],
+                REMOVEFILTERS ()
+            ),
+        "Month totals difference",
+            CALCULATE (
+                SUMX ( VALUES ( Calendar[MonthStart] ), [Total Admissions] ) - [Total Admissions],
+                REMOVEFILTERS ()
+            ),
+        "Department totals difference",
+            CALCULATE (
+                SUMX ( VALUES ( Departments[DepartmentID] ), [Total Admissions] ) - [Total Admissions],
+                REMOVEFILTERS ()
+            ),
+        "Latest occupied + available - capacity",
+            CALCULATE (
+                [Latest Occupied Beds] + [Latest Available Beds] - [Latest Bed Capacity],
+                REMOVEFILTERS ()
+            ),
+        "Doctors on roster",
+            CALCULATE ( [Total Doctors], REMOVEFILTERS () ),
+        "30-day readmissions",
+            CALCULATE ( [Readmissions (30-Day)], REMOVEFILTERS () ),
+        BLANK ()
+    )
+
+// Check Result   (PASS / FAIL / n/a for one row)
+Check Result =
+VAR a = [Check Actual]
+VAR e = SELECTEDVALUE ( 'Validation Checks'[Expected] )
+RETURN
+    IF ( ISBLANK ( a ), "n/a", IF ( a = e, "PASS", "FAIL" ) )
+
+// Checks Total / Checks Passed / Check Status
+Checks Total = COUNTROWS ( 'Validation Checks' )
+
+Checks Passed = COUNTROWS ( FILTER ( 'Validation Checks', [Check Result] = "PASS" ) )
+
+Check Status =
+IF (
+    [Checks Passed] = [Checks Total],
+    "ALL " & [Checks Total] & " CHECKS PASS",
+    ( [Checks Total] - [Checks Passed] ) & " CHECK(S) NEED ATTENTION"
+)
+
+// Colour measures for conditional formatting
+Check Result Color = IF ( [Check Result] = "PASS", "#2E9E5B", "#D64545" )
+
+Check Status Color = IF ( [Checks Passed] = [Checks Total], "#2E9E5B", "#D64545" )
+
+
+=====================================================================
+TROUBLESHOOTING
+=====================================================================
+FAIL on "Admissions outside Calendar"   -> a date is missing from
+    Calendar (Part 1 found none). Check the Calendar query range.
+FAIL on "Month totals difference"       -> Calendar[MonthStart] not
+    loaded, or an admission date has no calendar row.
+FAIL on "Department totals difference"  -> a relationship was added
+    or deactivated (see Part 2 relationship table).
+FAIL on "Open-stay split difference"    -> OpenStayCategory has a
+    value other than Completed / Current (open) / Stale open record.
+n/a anywhere                            -> the check name in the table
+    does not exactly match a SWITCH branch above.
+Cards show a value but the table is blank -> select the table visual
+    and confirm the fields are from 'Validation Checks' (not Measures).

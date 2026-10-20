@@ -1,0 +1,656 @@
+=====================================================================
+HOSPITAL OPERATIONS - DAX MEASURE LIBRARY   |   Part 4
+Model: Calendar, Departments, Wards, Beds, Doctors, Patients,
+       Admissions, BedSnapshots, Staffing (+ Discharges, hidden)
+=====================================================================
+
+HOW TO USE THIS FILE
+- Copy ONE block at a time, starting at the line that begins with the
+  measure name (the "Name = ..." line) and ending before the next
+  comment line. Do not copy the "//" notes (optional).
+- Create measures: click the Measures table in the Fields pane ->
+  Home -> New measure -> paste -> Enter.
+- Every measure note shows:
+    What      = plain-language meaning
+    Needs     = tables/columns used
+    Expected  = value with NO slicers selected (all 33 months,
+                all departments), checked against the workbook
+    Use in    = where to place it
+    Watch for = common errors
+- Colour hex codes used: green #2E9E5B, amber #F2A900, red #D64545,
+  neutral grey #9AA5B1 (matches the Part 5 theme).
+
+
+=====================================================================
+STEP 0 - ONE-TIME SETUP (Modeling / Table tools -> New table)
+=====================================================================
+
+// 0.1 Measures home table (then hide the Placeholder column)
+Measures = ROW ( "Placeholder", 1 )
+
+// 0.2 Parameter tables (each makes a single column called [Value]).
+//     Add each as a dropdown slicer on a "Settings" area/page.
+Long Stay Threshold          = GENERATESERIES ( 1, 30, 1 )
+Warning Occupancy Pct        = GENERATESERIES ( 50, 100, 1 )
+Critical Occupancy Pct       = GENERATESERIES ( 50, 100, 1 )
+Low Beds Threshold           = GENERATESERIES ( 0, 20, 1 )
+Spike Z Threshold            = GENERATESERIES ( 0.5, 3, 0.5 )
+Staffing Pressure Threshold  = GENERATESERIES ( 2, 12, 0.5 )
+Discharge Gap Tolerance Pct  = GENERATESERIES ( 0, 30, 1 )
+
+// 0.3 Calculated COLUMN on the Admissions table
+//     (Table tools -> New column, with Admissions selected)
+//     What: 1 if this admission is a 30-day readmission, else 0.
+//     Rule: previous stay of the SAME patient ended "Discharged"
+//     (not Transferred, Deceased or Ongoing), that discharge was on
+//     or before this admission date (no overlap), and the gap is
+//     0-30 days.
+//     Needs: Admissions[Pt_PrevStatus], [Pt_PrevDischargeDate],
+//            [AdmissionDate] (created in Part 3).
+//     Expected: SUM of the column = 114.
+//     Watch for: "column not found" -> Part 3 Admissions query must
+//     be loaded with the Pt_ columns.
+Is 30D Readmission =
+IF (
+    Admissions[Pt_PrevStatus] = "Discharged"
+        && NOT ISBLANK ( Admissions[Pt_PrevDischargeDate] ),
+    IF (
+        Admissions[Pt_PrevDischargeDate] <= Admissions[AdmissionDate]
+            && DATEDIFF ( Admissions[Pt_PrevDischargeDate], Admissions[AdmissionDate], DAY ) <= 30,
+        1,
+        0
+    ),
+    0
+)
+
+
+=====================================================================
+FOLDER 00 PARAMETERS  (value-reading measures)
+=====================================================================
+// What: read the slicer selection; if nothing is selected they
+//       return the default. Needs: the parameter tables in 0.2.
+// Expected: 7 | 85% | 95% | 5 | 1.5 | 6 | 10%   (defaults)
+// Watch for: multiple values selected in a slicer -> default used.
+
+Long Stay Days = SELECTEDVALUE ( 'Long Stay Threshold'[Value], 7 )
+
+Warning Occupancy = SELECTEDVALUE ( 'Warning Occupancy Pct'[Value], 85 ) / 100
+
+Critical Occupancy = SELECTEDVALUE ( 'Critical Occupancy Pct'[Value], 95 ) / 100
+
+Low Beds Limit = SELECTEDVALUE ( 'Low Beds Threshold'[Value], 5 )
+
+Spike Z Limit = SELECTEDVALUE ( 'Spike Z Threshold'[Value], 1.5 )
+
+Staffing Pressure Limit = SELECTEDVALUE ( 'Staffing Pressure Threshold'[Value], 6 )
+
+Discharge Gap Limit = SELECTEDVALUE ( 'Discharge Gap Tolerance Pct'[Value], 10 ) / 100
+
+
+=====================================================================
+FOLDER A - ADMISSIONS AND PATIENT KPIs
+=====================================================================
+
+// Total Admissions
+// What: one Admissions row = one admission, so count rows.
+// Needs: Admissions. Expected: 3,000
+// Use in: Page 1 card, Page 4 trend, every admissions visual.
+// Watch for: counts by AdmissionDate (active relationship).
+Total Admissions = COUNTROWS ( Admissions )
+
+// Total Discharges
+// What: admissions that have a discharge date, counted by the
+//       DISCHARGE date (inactive relationship switched on).
+// Needs: Calendar[Date], Admissions[DischargeDate].
+// Expected: 2,864 (equals COUNTROWS(Discharges)).
+// Use in: Page 1/4 cards and discharge trend lines.
+// Watch for: without the NOT ISBLANK filter, a card with no date
+//   filter would count the 136 open records too.
+Total Discharges =
+CALCULATE (
+    COUNTROWS ( Admissions ),
+    USERELATIONSHIP ( Calendar[Date], Admissions[DischargeDate] ),
+    NOT ISBLANK ( Admissions[DischargeDate] )
+)
+
+// Unique Patients
+// What: different patients with at least one admission.
+// Needs: Admissions[PatientID]. Expected: 1,471 (not 1,800).
+// Use in: Page 1 card. Watch for: do NOT count Patients rows; 329
+//   patients were never admitted.
+Unique Patients = DISTINCTCOUNT ( Admissions[PatientID] )
+
+// Emergency / Planned / Referral Admissions
+// Needs: Admissions[AdmissionType].
+// Expected: 1,411 | 1,127 | 462 (the data has THREE types).
+// Use in: Page 1 and 4 cards, type breakdown.
+Emergency Admissions = CALCULATE ( [Total Admissions], Admissions[AdmissionType] = "Emergency" )
+
+Planned Admissions = CALCULATE ( [Total Admissions], Admissions[AdmissionType] = "Planned" )
+
+Referral Admissions = CALCULATE ( [Total Admissions], Admissions[AdmissionType] = "Referral" )
+
+// Admission Mix %
+// What: share of each admission type within the current filters.
+// Expected: Emergency 47.0% | Planned 37.6% | Referral 15.4%
+// Use in: donut/100% bar by Admissions[AdmissionType].
+// Watch for: with the type slicer on, other types show blank.
+Admission Mix % =
+DIVIDE (
+    [Total Admissions],
+    CALCULATE ( [Total Admissions], REMOVEFILTERS ( Admissions[AdmissionType] ) )
+)
+
+// Department Share of Admissions %
+// What: a department's share of all admissions in the selection.
+// Expected: General Medicine 21.9%, Emergency 15.2%, Cardiology 12.4%,
+//   Orthopedics 12.0%, Neurology 10.8%, Pediatrics 9.8%,
+//   Maternity 9.7%, Oncology 8.3%.
+// Use in: bar chart by Departments[DepartmentName].
+Department Share of Admissions % =
+DIVIDE (
+    [Total Admissions],
+    CALCULATE ( [Total Admissions], REMOVEFILTERS ( Departments ) )
+)
+
+// (Admissions by Department = [Total Admissions] on a visual with
+//  Departments[DepartmentName]; no extra measure is needed.)
+
+// Average Daily Admissions
+// What: admissions divided by the number of calendar days selected.
+// Needs: Calendar. Expected: 2.99
+// Watch for: partial slicer ranges are handled because Calendar is
+//   filtered by the slicer.
+Average Daily Admissions = DIVIDE ( [Total Admissions], COUNTROWS ( Calendar ) )
+
+// Undischarged / Current Open / Stale Open Records
+// What: admissions with no discharge date, split with the Part 3
+//   OpenStayCategory (30-day rule).
+// Expected: 136 | 16 | 120
+// Use in: Page 1/4 data-quality card. Watch for: "Stale" is an
+//   assumption (likely missing discharge), not a proven fact.
+Undischarged Admission Records =
+CALCULATE ( [Total Admissions], Admissions[OpenStayCategory] <> "Completed" )
+
+Current Open Admissions =
+CALCULATE ( [Total Admissions], Admissions[OpenStayCategory] = "Current (open)" )
+
+Stale Open Records =
+CALCULATE ( [Total Admissions], Admissions[OpenStayCategory] = "Stale open record" )
+
+// Stale Open Records %   Expected: 4.0% (120 / 3,000)
+Stale Open Records % = DIVIDE ( [Stale Open Records], [Total Admissions] )
+
+// Readmissions (30-Day) and Readmission Rate (30-Day)
+// What: admissions flagged by [Is 30D Readmission]; the rate is that
+//   count divided by ALL admissions (not only discharges).
+// Expected: 114 | 3.80%
+// Use in: Page 4 card/trend.
+// Watch for: the first admissions in 2024 cannot show a readmission
+//   (no earlier history), so early months are understated. Report as
+//   "30-day readmissions as % of admissions".
+Readmissions (30-Day) = CALCULATE ( [Total Admissions], Admissions[Is 30D Readmission] = 1 )
+
+Readmission Rate (30-Day) = DIVIDE ( [Readmissions (30-Day)], [Total Admissions] )
+
+
+=====================================================================
+FOLDER B - BED MANAGEMENT KPIs
+=====================================================================
+// RULE: BedSnapshots has one row per ward per DAY. Summing it gives
+// BED-DAYS, never "beds". Static bed counts come from Beds/Wards.
+
+// Total Bed Inventory
+// What: physical beds (one row per bed). Needs: Beds[BedID].
+// Expected: 280. Use in: Page 2 card.
+Total Bed Inventory = DISTINCTCOUNT ( Beds[BedID] )
+
+// Total Bed Capacity
+// What: declared capacity of the selected wards. Needs:
+//   Wards[BedCapacity]. Expected: 280 (must equal inventory).
+// Watch for: do not use SUM(BedSnapshots[BedCapacity]) for this.
+Total Bed Capacity = SUM ( Wards[BedCapacity] )
+
+// Bed-day building blocks (sum over days AND wards)
+// Expected: 217,140 | 63,980 | 281,120
+// Watch for: label as "bed-days"; never present as a bed count.
+Occupied Bed-Days = SUM ( BedSnapshots[OccupiedBeds] )
+
+Available Bed-Days = SUM ( BedSnapshots[AvailableBeds] )
+
+Capacity Bed-Days = SUM ( BedSnapshots[BedCapacity] )
+
+// Average Occupancy Rate / Ward Occupancy Rate
+// What: occupied bed-days / capacity bed-days (capacity-weighted).
+// Expected: 77.24% overall. By ward: W04 General Medicine 84.8%,
+//   W06 Oncology 81.8%, W01 Cardiology 78.8%, W03 Neurology 76.8%,
+//   W07 Emergency Obs 74.6%, W02 Orthopedics 73.9%,
+//   W08 Maternity 72.8%, W05 Pediatrics 70.2%.
+// Use in: cards, ward bar chart, matrix.
+// Watch for: NEVER average BedSnapshots[OccupancyRate] (gives 76.7%,
+//   which is wrong).
+Average Occupancy Rate = DIVIDE ( [Occupied Bed-Days], [Capacity Bed-Days] )
+
+Ward Occupancy Rate = [Average Occupancy Rate]
+
+// Bed Availability %   Expected: 22.76%
+Bed Availability % = DIVIDE ( [Available Bed-Days], [Capacity Bed-Days] )
+
+// Snapshot Days / Average Daily Occupied Beds / Daily Average Available Beds
+// What: bed-days divided by the number of days = beds per day.
+// Expected: 1,004 | 216.27 | 63.73
+Snapshot Days = DISTINCTCOUNT ( BedSnapshots[SnapshotDate] )
+
+Average Daily Occupied Beds = DIVIDE ( [Occupied Bed-Days], [Snapshot Days] )
+
+Daily Average Available Beds = DIVIDE ( [Available Bed-Days], [Snapshot Days] )
+
+// Latest-day values ("latest date inside the current filters")
+// Expected (no slicers): date 30-Sep-2026 | occupied 198 |
+//   available 82 | capacity 280 | rate 70.71%
+// Use in: Page 2 cards and ward alert table. On a month axis they
+//   give month-end values.
+Latest Snapshot Date = MAX ( BedSnapshots[SnapshotDate] )
+
+Latest Occupied Beds =
+VAR d = [Latest Snapshot Date]
+RETURN
+    CALCULATE ( SUM ( BedSnapshots[OccupiedBeds] ), BedSnapshots[SnapshotDate] = d )
+
+Latest Available Beds =
+VAR d = [Latest Snapshot Date]
+RETURN
+    CALCULATE ( SUM ( BedSnapshots[AvailableBeds] ), BedSnapshots[SnapshotDate] = d )
+
+Latest Bed Capacity =
+VAR d = [Latest Snapshot Date]
+RETURN
+    CALCULATE ( SUM ( BedSnapshots[BedCapacity] ), BedSnapshots[SnapshotDate] = d )
+
+Latest Occupancy Rate = DIVIDE ( [Latest Occupied Beds], [Latest Bed Capacity] )
+
+// Bed Shortage Indicator (1 = latest available beds <= Low Beds Limit)
+// Expected: hospital 0; W01 Cardiology = 1 (5 beds free on 30-Sep-2026)
+// Use in: ward table (row = ward). Watch for: the limit is an
+//   example threshold, not a medical standard.
+Bed Shortage Indicator =
+VAR a = [Latest Available Beds]
+RETURN
+    IF ( NOT ISBLANK ( a ) && a <= [Low Beds Limit], 1, 0 )
+
+// Wards with Low Availability (Latest)   Expected: 1
+Wards with Low Availability (Latest) =
+VAR lim = [Low Beds Limit]
+RETURN
+    COUNTROWS (
+        FILTER (
+            VALUES ( Wards[WardID] ),
+            VAR a = [Latest Available Beds]
+            RETURN NOT ISBLANK ( a ) && a <= lim
+        )
+    )
+
+// Low-Availability Ward-Days   (ward-days with free beds <= limit)
+// Expected: 1,668 at the default limit of 5.
+Low-Availability Ward-Days =
+VAR lim = [Low Beds Limit]
+RETURN
+    COUNTROWS ( FILTER ( BedSnapshots, BedSnapshots[AvailableBeds] <= lim ) )
+
+// High-Occupancy Ward Count (Latest)   (latest rate >= warning level)
+// Expected: 1 (W01 Cardiology, 86.1%)
+High-Occupancy Ward Count (Latest) =
+VAR w = [Warning Occupancy]
+RETURN
+    COUNTROWS (
+        FILTER (
+            VALUES ( Wards[WardID] ),
+            VAR r = [Latest Occupancy Rate]
+            RETURN NOT ISBLANK ( r ) && r >= w
+        )
+    )
+
+// Critical Ward Count (Latest)   Expected: 0
+Critical Ward Count (Latest) =
+VAR c = [Critical Occupancy]
+RETURN
+    COUNTROWS (
+        FILTER (
+            VALUES ( Wards[WardID] ),
+            VAR r = [Latest Occupancy Rate]
+            RETURN NOT ISBLANK ( r ) && r >= c
+        )
+    )
+
+// High-Occupancy Ward-Days / Critical Ward-Days
+// (ward-days at or above the warning / critical level)
+// Expected: 1,323 | 60 at 85% / 95%.
+High-Occupancy Ward-Days =
+VAR w = [Warning Occupancy]
+RETURN
+    COUNTROWS (
+        FILTER ( BedSnapshots, DIVIDE ( BedSnapshots[OccupiedBeds], BedSnapshots[BedCapacity] ) >= w )
+    )
+
+Critical Ward-Days =
+VAR c = [Critical Occupancy]
+RETURN
+    COUNTROWS (
+        FILTER ( BedSnapshots, DIVIDE ( BedSnapshots[OccupiedBeds], BedSnapshots[BedCapacity] ) >= c )
+    )
+
+// Occupancy Alert Status (text, based on the LATEST occupancy)
+// Expected: hospital "Normal"; W01 "Warning"; others "Normal".
+// Use in: ward table, conditional formatting, tooltips.
+Occupancy Alert Status =
+VAR r = [Latest Occupancy Rate]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( r ), BLANK (),
+        r >= [Critical Occupancy], "Critical",
+        r >= [Warning Occupancy], "Warning",
+        "Normal"
+    )
+
+
+=====================================================================
+FOLDER C - DOCTOR AND STAFFING KPIs
+=====================================================================
+// IMPORTANT: Doctors is not related to Departments (Part 2), so
+// doctor counts use TREATAS to obey the Department slicer. The WARD
+// slicer does not filter Doctors or Staffing.
+
+// Total Doctors  (also "Doctor Count by Specialization": put this
+//   measure with Doctors[Specialization] on the axis)
+// Expected: 91. By department: 101=13, 102=12, 103=10, 104=14,
+//   105=10, 106=10, 107=13, 108=9.
+Total Doctors =
+CALCULATE (
+    DISTINCTCOUNT ( Doctors[DoctorID] ),
+    TREATAS ( VALUES ( Departments[DepartmentID] ), Doctors[DepartmentID] )
+)
+
+// Avg Doctor Experience (Years)   Expected: 13.80
+Avg Doctor Experience (Years) =
+CALCULATE (
+    AVERAGE ( Doctors[ExperienceYears] ),
+    TREATAS ( VALUES ( Departments[DepartmentID] ), Doctors[DepartmentID] )
+)
+
+// Average daily staffing (sum across departments each day, then
+//   average over days)
+// Expected: doctors on duty 49.04 | doctors available 91.00 |
+//   nurses on duty 209.22
+// Watch for: do NOT sum these across days. DoctorsAvailable is
+//   effectively roster size (Part 1, F4), so it barely varies.
+Avg Doctors on Duty =
+AVERAGEX ( VALUES ( Staffing[StaffingDate] ), CALCULATE ( SUM ( Staffing[DoctorsOnDuty] ) ) )
+
+Avg Doctors Available =
+AVERAGEX ( VALUES ( Staffing[StaffingDate] ), CALCULATE ( SUM ( Staffing[DoctorsAvailable] ) ) )
+
+Avg Nurses on Duty =
+AVERAGEX ( VALUES ( Staffing[StaffingDate] ), CALCULATE ( SUM ( Staffing[NurseOnDuty] ) ) )
+
+// Doctor On-Duty Share %   Expected: 53.9%
+Doctor On-Duty Share % = DIVIDE ( [Avg Doctors on Duty], [Avg Doctors Available] )
+
+// Nurses per Doctor on Duty   Expected: 4.27
+Nurses per Doctor on Duty = DIVIDE ( [Avg Nurses on Duty], [Avg Doctors on Duty] )
+
+// Admissions per Assigned Doctor
+// Numerator: admissions in the selection. Denominator: doctors on
+//   the roster of the selected departments (not only doctors who
+//   have admissions). Expected: 32.97
+// Watch for: this is workload volume, NOT a performance score.
+Admissions per Assigned Doctor = DIVIDE ( [Total Admissions], [Total Doctors] )
+
+// Occupied Beds per Doctor on Duty (patient-load proxy)
+// Numerator: occupied bed-days (BedSnapshots). Denominator:
+//   doctor-days on duty (Staffing). Both use the same Calendar and
+//   Department filters. Expected: 4.41
+// Watch for: "patients" here means occupied beds from the snapshot
+//   table, not admissions (the two do not reconcile, Part 1 F3).
+Occupied Beds per Doctor on Duty =
+DIVIDE ( [Occupied Bed-Days], SUM ( Staffing[DoctorsOnDuty] ) )
+
+// Latest Occupied Beds per Doctor on Duty
+// Expected: hospital 4.21; General Medicine 6.33 on 30-Sep-2026.
+Latest Occupied Beds per Doctor on Duty =
+VAR d = [Latest Snapshot Date]
+VAR occ = CALCULATE ( SUM ( BedSnapshots[OccupiedBeds] ), BedSnapshots[SnapshotDate] = d )
+VAR docs = CALCULATE ( SUM ( Staffing[DoctorsOnDuty] ), Staffing[StaffingDate] = d )
+RETURN
+    DIVIDE ( occ, docs )
+
+// Staffing Pressure Flag / Status (latest day; limit is an example)
+// Expected: General Medicine = 1 / "High patient load"; hospital 0.
+Staffing Pressure Flag =
+VAR r = [Latest Occupied Beds per Doctor on Duty]
+RETURN
+    IF ( NOT ISBLANK ( r ) && r >= [Staffing Pressure Limit], 1, 0 )
+
+Staffing Pressure Status =
+IF ( [Staffing Pressure Flag] = 1, "High patient load", "Normal" )
+
+// Staffing Pressure Departments (Latest)   Expected: 1
+Staffing Pressure Departments (Latest) =
+VAR lim = [Staffing Pressure Limit]
+RETURN
+    COUNTROWS (
+        FILTER (
+            VALUES ( Departments[DepartmentID] ),
+            VAR r = [Latest Occupied Beds per Doctor on Duty]
+            RETURN NOT ISBLANK ( r ) && r >= lim
+        )
+    )
+
+
+=====================================================================
+FOLDER D - LENGTH OF STAY (completed stays only)
+=====================================================================
+// LengthOfStayDays is blank for open stays, so AVERAGE/MEDIAN/MIN/MAX
+// ignore them automatically. LOS belongs to the ADMISSION-date cohort.
+
+// Completed Stays   Expected: 2,864
+Completed Stays = COUNT ( Admissions[LengthOfStayDays] )
+
+// Average / Median / Min / Max Length of Stay (days)
+// Expected: 3.33 | 2 | 0 | 24
+// By department (avg): Cardiology 4.38, Orthopedics 3.72,
+//   Neurology 5.02, Gen. Medicine 2.76, Pediatrics 2.22,
+//   Oncology 7.05, Emergency 1.19, Maternity 2.22.
+// By discharge status (avg): Discharged 3.32, Transferred 3.42,
+//   Deceased 3.29 (use Admissions[DischargeStatus] on the axis).
+// Watch for: 161 same-day stays have LOS = 0 (valid). 136 open
+//   stays are excluded; state this on the page.
+Average Length of Stay = AVERAGE ( Admissions[LengthOfStayDays] )
+
+Median Length of Stay = MEDIAN ( Admissions[LengthOfStayDays] )
+
+Min Length of Stay = MIN ( Admissions[LengthOfStayDays] )
+
+Max Length of Stay = MAX ( Admissions[LengthOfStayDays] )
+
+// Long-Stay Discharge Count / Long-Stay Percentage
+// What: completed stays with LOS >= [Long Stay Days].
+// Expected (limit 7): 341 | 11.9%
+Long-Stay Discharge Count =
+VAR lim = [Long Stay Days]
+RETURN
+    CALCULATE ( COUNTROWS ( Admissions ), Admissions[LengthOfStayDays] >= lim )
+
+Long-Stay Percentage = DIVIDE ( [Long-Stay Discharge Count], [Completed Stays] )
+
+
+=====================================================================
+FOLDER E - TIME INTELLIGENCE
+=====================================================================
+// Requires Calendar marked as the date table (Part 2).
+
+// Current / Previous Month Admissions
+// What: "current" = the latest month in the filter (the month on a
+//   chart axis, or the last month selected in a slicer).
+//   REMOVEFILTERS lets the previous month show even when the date
+//   slicer starts at the current month.
+// Expected (no date slicer): current (Sep-2026) 81 | previous
+//   (Aug-2026) 105.
+Current Month Admissions =
+VAR m = MAX ( Calendar[MonthStart] )
+RETURN
+    CALCULATE ( [Total Admissions], REMOVEFILTERS ( Calendar ), Calendar[MonthStart] = m )
+
+Previous Month Admissions =
+VAR pm = EDATE ( MAX ( Calendar[MonthStart] ), -1 )
+RETURN
+    CALCULATE ( [Total Admissions], REMOVEFILTERS ( Calendar ), Calendar[MonthStart] = pm )
+
+// Admissions MoM Growth %   Expected: -22.86% (81 vs 105)
+Admissions MoM Growth % =
+DIVIDE ( [Current Month Admissions] - [Previous Month Admissions], [Previous Month Admissions] )
+
+// Current / Previous Month Discharges (by DISCHARGE date)
+// Expected: 74 | 102
+// Watch for: discharges in a month include patients admitted in
+//   earlier months (different cohorts).
+Current Month Discharges =
+VAR m = MAX ( Calendar[MonthStart] )
+RETURN
+    CALCULATE ( [Total Discharges], REMOVEFILTERS ( Calendar ), Calendar[MonthStart] = m )
+
+Previous Month Discharges =
+VAR pm = EDATE ( MAX ( Calendar[MonthStart] ), -1 )
+RETURN
+    CALCULATE ( [Total Discharges], REMOVEFILTERS ( Calendar ), Calendar[MonthStart] = pm )
+
+// Admissions Same Period Last Year / YoY Growth %
+// Returns BLANK unless a full prior-year window exists in the data
+//   (the data starts 1-Jan-2024).
+// Expected: Year slicer 2025 -> +5.67% (1,119 vs 1,059);
+//   Year slicer 2026 -> -1.91% (822 vs 838, Jan-Sep both years);
+//   2024 -> blank.
+Admissions Same Period Last Year =
+CALCULATE ( [Total Admissions], SAMEPERIODLASTYEAR ( Calendar[Date] ) )
+
+Admissions YoY Growth % =
+VAR dataStart = CALCULATE ( MIN ( Calendar[Date] ), REMOVEFILTERS ( Calendar ) )
+VAR winStart = MIN ( Calendar[Date] )
+VAR ly = [Admissions Same Period Last Year]
+RETURN
+    IF (
+        EDATE ( winStart, -12 ) < dataStart || ISBLANK ( ly ),
+        BLANK (),
+        DIVIDE ( [Total Admissions] - ly, ly )
+    )
+
+// Rolling 7-Day / 30-Day Admissions
+// What: admissions in the 7 (or 30) days ending on the last date in
+//   context. Use on a DAILY axis. Expected at 30-Sep-2026: 14 | 81
+Rolling 7-Day Admissions =
+CALCULATE ( [Total Admissions], DATESINPERIOD ( Calendar[Date], MAX ( Calendar[Date] ), -7, DAY ) )
+
+Rolling 30-Day Admissions =
+CALCULATE ( [Total Admissions], DATESINPERIOD ( Calendar[Date], MAX ( Calendar[Date] ), -30, DAY ) )
+
+// Admissions MTD / YTD, Discharges YTD
+// Expected at 30-Sep-2026: MTD 81 | YTD 822
+// Watch for: totals reset each month/year; use a daily or monthly axis.
+Admissions MTD = TOTALMTD ( [Total Admissions], Calendar[Date] )
+
+Admissions YTD = TOTALYTD ( [Total Admissions], Calendar[Date] )
+
+Discharges YTD = CALCULATE ( [Total Discharges], DATESYTD ( Calendar[Date] ) )
+
+
+=====================================================================
+FOLDER F - OPERATIONAL ALERTS (thresholds come from the sliders)
+=====================================================================
+
+// Critical / Warning Occupancy Flag (1/0 from the LATEST occupancy)
+// Expected: hospital 0 | 0; W01 Cardiology: critical 0, warning 1.
+Critical Occupancy Flag =
+VAR r = [Latest Occupancy Rate]
+RETURN
+    IF ( NOT ISBLANK ( r ) && r >= [Critical Occupancy], 1, 0 )
+
+Warning Occupancy Flag =
+VAR r = [Latest Occupancy Rate]
+RETURN
+    IF ( NOT ISBLANK ( r ) && r >= [Warning Occupancy] && r < [Critical Occupancy], 1, 0 )
+
+// Low Availability Status (uses Bed Shortage Indicator from Folder B)
+Low Availability Status = IF ( [Bed Shortage Indicator] = 1, "Low availability", "OK" )
+
+// Admissions Spike (use on a MONTH axis)
+// What: z-score = how many standard deviations a month's admissions
+//   are above the average month in the current selection.
+// Expected (default 1.5, all 33 months, mean 90.9, st.dev 10.39):
+//   flagged: Jan-2025 (112, z=2.03) and Jun-2025 (110, z=1.84).
+// Watch for: descriptive only (baseline includes all selected
+//   months). One department at a time has fewer admissions, so more
+//   noise.
+Monthly Admissions Mean =
+AVERAGEX ( ALLSELECTED ( Calendar[MonthStart] ), [Total Admissions] )
+
+Monthly Admissions StdDev =
+STDEVX.P ( ALLSELECTED ( Calendar[MonthStart] ), [Total Admissions] )
+
+Admissions Spike Z-Score =
+DIVIDE ( [Total Admissions] - [Monthly Admissions Mean], [Monthly Admissions StdDev] )
+
+Admissions Spike Flag = IF ( [Admissions Spike Z-Score] >= [Spike Z Limit], 1, 0 )
+
+Admissions Spike Status = IF ( [Admissions Spike Flag] = 1, "Spike", "Normal" )
+
+// Net Admissions / Admissions Exceed Discharges Flag
+// What: net = admissions that month minus discharges that month.
+//   Flag = net is more than the tolerance % of that month's
+//   admissions.
+// Expected (default 10%): net Sep-2026 = +7 (8.6%, not flagged);
+//   4 of 33 months flagged. At 0% tolerance 26 of 33 months fire,
+//   mostly because 136 admissions have no discharge date.
+// Watch for: the latest months look worse because recent patients
+//   have not been discharged yet.
+Net Admissions = [Total Admissions] - [Total Discharges]
+
+Admissions Exceed Discharges Flag =
+IF ( DIVIDE ( [Net Admissions], [Total Admissions] ) > [Discharge Gap Limit], 1, 0 )
+
+// Active Alert Signals (Latest)
+// What: high-occupancy wards + wards with low availability +
+//   departments with high patient load, as of the latest date.
+//   One ward can raise two signals, so this counts signals,
+//   not wards.
+// Expected: 3 (W01 high occupancy, W01 low availability,
+//   General Medicine staffing load).
+Active Alert Signals (Latest) =
+[High-Occupancy Ward Count (Latest)]
+    + [Wards with Low Availability (Latest)]
+    + [Staffing Pressure Departments (Latest)]
+
+
+=====================================================================
+FOLDER G - COLOUR MEASURES (for conditional formatting)
+=====================================================================
+// Apply: visual -> Format -> (Cell elements | Callout value) ->
+//   Background colour / Font colour -> fx -> Format style
+//   "Field value" -> pick the measure.
+// Watch for: the measure must return a hex string such as "#D64545".
+
+Occupancy Color =
+SWITCH (
+    [Occupancy Alert Status],
+    "Critical", "#D64545",
+    "Warning", "#F2A900",
+    "Normal", "#2E9E5B",
+    "#9AA5B1"
+)
+
+Low Availability Color = IF ( [Bed Shortage Indicator] = 1, "#F2A900", "#2E9E5B" )
+
+Spike Color = IF ( [Admissions Spike Flag] = 1, "#F2A900", "#2E9E5B" )
+
+Net Admissions Color = IF ( [Admissions Exceed Discharges Flag] = 1, "#F2A900", "#2E9E5B" )
+
+Staffing Pressure Color = IF ( [Staffing Pressure Flag] = 1, "#F2A900", "#2E9E5B" )

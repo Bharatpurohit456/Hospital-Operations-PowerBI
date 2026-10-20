@@ -1,0 +1,45 @@
+{
+  "name": "Hospital Analytics",
+  "dataColors": ["#0E9AA7", "#2F6DB5", "#8FD3D9", "#0B2545", "#F2A900", "#2E9E5B", "#D64545", "#9AA5B1"],
+  "background": "#FFFFFF",
+  "foreground": "#0B2545",
+  "tableAccent": "#0E9AA7",
+  "good": "#2E9E5B",
+  "neutral": "#F2A900",
+  "bad": "#D64545",
+  "maximum": "#0E9AA7",
+  "center": "#F2A900",
+  "minimum": "#D64545",
+  "null": "#9AA5B1",
+  "textClasses": {
+    "callout": { "fontSize": 24, "fontFace": "Segoe UI Semibold", "color": "#0B2545" },
+    "title":   { "fontSize": 12, "fontFace": "Segoe UI Semibold", "color": "#0B2545" },
+    "header":  { "fontSize": 11, "fontFace": "Segoe UI Semibold", "color": "#0B2545" },
+    "label":   { "fontSize": 10, "fontFace": "Segoe UI", "color": "#4A5A6A" }
+  },
+  "visualStyles": {
+    "*": {
+      "*": {
+        "title": [{
+          "show": true,
+          "fontColor": { "solid": { "color": "#0B2545" } },
+          "fontSize": 12,
+          "fontFamily": "Segoe UI Semibold",
+          "alignment": "left"
+        }],
+        "background": [{ "show": true, "color": { "solid": { "color": "#FFFFFF" } }, "transparency": 0 }],
+        "border": [{ "show": true, "color": { "solid": { "color": "#E1E6EB" } }, "radius": 6 }]
+      }
+    },
+    "page": {
+      "*": {
+        "background": [{ "color": { "solid": { "color": "#F4F6F8" } }, "transparency": 0 }]
+      }
+    },
+    "lineChart": {
+      "*": {
+        "lineStyles": [{ "strokeWidth": 2.5, "showMarker": false }]
+      }
+    }
+  }
+}
