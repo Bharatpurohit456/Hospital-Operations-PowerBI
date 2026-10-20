@@ -29,9 +29,11 @@ Hospital-Operations-PowerBI/
 │   ├── HospitalOps_Theme.json
 │   └── HospitalOps_Validation_Measures.txt
 ├── Screenshots/
-│   ├── dashboard.png
-│   ├── admissions_analysis.png
-│   └── discharge_analysis.png
+│   ├── page1-executive-overview.png
+│   ├── page2-bed-capacity.png
+│   ├── page3-doctors-staffing.png
+|   ├── page4-admissions-discharges.png
+|   └── page5-trends-insights.png
 └── Report/
     └── Project_Report.pdf
 ```
